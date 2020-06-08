@@ -8,15 +8,15 @@ int_build_env()
 {
 
 export SCRIPT_NAME="RASPBERRY PI OS"
-export SCRIPT_VERSION="1.5"
+export SCRIPT_VERSION="1.7"
 export LINUX_NAME="acr-linux"
-export DISTRIBUTION_VERSION="2020.4"
+export DISTRIBUTION_VERSION="2020.5"
 export IMAGE_NAME="minimal-acrlinux-rpi-${SCRIPT_VERSION}.img"
 export BUILD_OTHER_DIR="build_script_for_other"
 
 # BASE
 export KERNEL_BRANCH="4.x" 
-export KERNEL_VERSION=""
+export KERNEL_VERSION=""5.6.14
 export BUSYBOX_VERSION="1.30.1"
 export SYSLINUX_VERSION="6.03"
 export UBOOT_VERSION="2019.10"
@@ -38,6 +38,7 @@ export UBOOT_DIR=${BASEDIR}/raspberry-pi-uboot
 export RPI_KERNEL_DIR=${BASEDIR}/linux
 export CONFIG_ETC_DIR="${BASEDIR}/os-configs/etc"
 export RPI_BASE_BIN=${BASEDIR}/rpi_base_bin
+export WORKSPACE="${BASEDIR}/workspace"
 
 #export CFLAGS=-m64
 #export CXXFLAGS=-m64
@@ -52,9 +53,15 @@ fi
 
 export CROSS_COMPILE=$BASEDIR/cross-gcc-arm/gcc-arm-8.2-x86_64-arm-linux-gnueabihf/bin/$CROSS_GCC
 
+#configs
+export RPI_OS_KCONFIG="$BASEDIR/configs/kernel/rpi_os_kconfig"
+export RPI_OS_BUSYBOX_CONFIG="$BASEDIR/configs/busybox/rpi_os_busybox_config"
+export RPI_OS_UBOOT_CONFIG="$BASEDIR/configs/uboot/rpi_os_uboot_config"
+
 }
 
 prepare_dirs () {
+
     cd ${BASEDIR}
     
     if [ ! -d ${SOURCEDIR} ];
@@ -73,18 +80,38 @@ prepare_dirs () {
 	mkdir -p ${IMGDIR}/boot/overlays
 	mkdir -p ${IMGDIR}/kernel
     fi
+    if [ ! -d ${WORKSPACE} ];
+    then
+	mkdir ${WORKSPACE}
+    fi
 }
 
 build_kernel () {
-    cd ${RPI_KERNEL_DIR}
-	
+
+    cd ${SOURCEDIR}
+
+    if [ ! -d ${WORKSPACE}/linux-${KERNEL_VERSION} ];
+    then
+	    echo "copying kernel src to workspace"
+	    cp -r linux-${KERNEL_VERSION} ${WORKSPACE}
+	    echo "copying kernel patch to workspace"
+	    cp -r kernel-patch ${WORKSPACE}
+	    cd  ${WORKSPACE}/linux-${KERNEL_VERSION}
+	    for patch in $(ls ../kernel-patch | grep '^[000-999]*_.*.patch'); do
+		    echo "applying patch .... '$patch'."
+		    patch -p1 < ../kernel-patch/${patch}
+            done
+    fi
+
+    cd  ${WORKSPACE}/linux-${KERNEL_VERSION}
+
     if [ "$1" == "-c" ]
     then		    
     	make clean -j$JFLAG ARCH=$ARCH CROSS_COMPILE=$CROSS_COMPILE
     elif [ "$1" == "-b" ]
     then	    
-    	make -j$JFLAG ARCH=$ARCH CROSS_COMPILE=$CROSS_COMPILE bcm2709_defconfig
-    	make -j$JFLAG  ARCH=$ARCH CROSS_COMPILE=$CROSS_COMPILE zImage modules dtbs
+    	cp $RPI_OS_KCONFIG .config
+    	make oldconfig -j$JFLAG  ARCH=$ARCH CROSS_COMPILE=$CROSS_COMPILE zImage modules dtbs
     
     	make modules_install
 
@@ -92,11 +119,23 @@ build_kernel () {
     	cp arch/arm/boot/dts/overlays/*.dtb*  $IMGDIR/boot/overlays/
     	cp arch/arm/boot/dts/overlays/README  $IMGDIR/boot/overlays/
     	cp arch/arm/boot/zImage               $IMGDIR/kernel/rpi-kernel.img
-    fi   
+    fi
 }
 
 build_busybox () {
     cd ${SOURCEDIR}
+
+    if [ ! -d ${WORKSPACE}/busybox-${BUSYBOX_VERSION} ];
+    then
+            cp -r busybox-${BUSYBOX_VERSION} ${WORKSPACE}
+	    echo "copying busybox patch to workspace"
+            cp -r busybox-patch ${WORKSPACE}
+            cd  ${WORKSPACE}/busybox-${BUSYBOX_VERSION}
+            for patch in $(ls ../busybox-patch | grep '^[000-999]*_.*.patch'); do
+                echo "applying patch .... '$patch'."
+                patch -p1 < ../busybox-patch/${patch}
+            done
+    fi
 
     cd busybox-${BUSYBOX_VERSION}
 
@@ -104,8 +143,9 @@ build_busybox () {
     then	    
     	make -j$JFLAG ARCH=$ARCH CROSS_COMPILE=$CROSS_COMPILE clean
     elif [ "$1" == "-b" ]
-    then	    
-    	make -j$JFLAG ARCH=$ARCH CROSS_COMPILE=$CROSS_COMPILE defconfig
+    then
+	cp $RPI_OS_BUSYBOX_CONFIG .config	    
+    	make -j$JFLAG ARCH=$ARCH CROSS_COMPILE=$CROSS_COMPILE oldconfig
     	sed -i 's|.*CONFIG_STATIC.*|CONFIG_STATIC=y|' .config
     	make  ARCH=$arm CROSS_COMPILE=$CROSS_COMPIL busybox \
         	-j ${JFLAG}
@@ -129,14 +169,28 @@ build_uboot () {
 		rm u-boot-2019.10.tar.bz2
 	fi	
 
-	cd u-boot-${UBOOT_VERSION}
+    	if [ ! -d   ${WORKSPACE}/u-boot-${UBOOT_VERSION} ];
+    	then
+	   echo "copying uboot to workspace"
+           cp -r  u-boot-${UBOOT_VERSION} ${WORKSPACE}
+	   echo "copying uboot patch to workspace"
+           cp -r uboot-patch ${WORKSPACE}
+           cd   u-boot-${UBOOT_VERSION}
+           for patch in $(ls ../uboot-patch | grep '^[000-999]*_.*.patch'); do
+                echo "applying patch .... '$patch'."
+                patch -p1 < ../uboot-patch/${patch}
+            done
+    	fi
 
+	cd u-boot-${UBOOT_VERSION}
+	
 	if [ "$1" == "-c" ]
 	then       	
 		make -j$JFLAG ARCH=$ARCH CROSS_COMPILE=$CROSS_COMPILE distclean
         elif [ "$1" == "-b" ]
 	then	
-		make -j$JFLAG ARCH=$ARCH CROSS_COMPILE=$CROSS_COMPILE rpi_defconfig
+		cp $RPI_OS_UBOOT_CONFIG .config
+		make -j$JFLAG ARCH=$ARCH CROSS_COMPILE=$CROSS_COMPILE oldconfig
 		make -j$JFLAG ARCH=$ARCH CROSS_COMPILE=$CROSS_COMPILE u-boot.bin
 		cp u-boot.bin $IMGDIR/bootloader
 	else
@@ -299,6 +353,7 @@ clean_files () {
     rm -rf ${IMGDIR}
     rm -rf ${UBOOT_DIR}
     rm -rf ${RPI_KERNEL_DIR}
+    rm -rf ${WORKSPACE}
 }
 
 init_work_dir()
@@ -344,7 +399,7 @@ help_msg()
 {
 echo -e "#################################################################################\n"
 
-echo -e "############################Utility to Build RPI OS##############################\n"
+echo -e "########################$SCRIPT_VERSION Utility to Build RPI OS##############################\n"
 
 echo -e "#################################################################################\n"
 
